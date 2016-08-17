@@ -220,7 +220,7 @@ void loop() {
         float x_mag =  -mags.XAxis * cp + mags.ZAxis * sp;
         float y_mag = -mags.XAxis * sr * sp + mags.YAxis * cr - mags.ZAxis * sr * cp;
         float compass_diff = atan2(y_mag, -x_mag) - ypr[0];
-        if (compass_diff > 0.25) { // i.e. major change such as from pi to -pi
+        if (abs(compass_offset - compass_diff) > 0.25) { // i.e. major change such as from pi to -pi
           compass_offset = compass_diff;
         }
         else {
