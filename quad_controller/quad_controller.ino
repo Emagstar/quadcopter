@@ -4,6 +4,8 @@
 //      2016-08-03 - enable i2cbypass and include hmc5883l magnetometer compass
 // MIT licence Copyright (c) 2016 Ben Gaunt
 
+#define GRAVITY 9.80665 //m s^-2
+
 #include <hmc5883l.h>
 // I2Cdev and MPU6050 must be installed as libraries, or else the .cpp/.h files
 // for both classes must be in the include path of your project
@@ -49,12 +51,17 @@ uint8_t fifoBuffer[64]; // FIFO storage buffer
 Quaternion q;           // [w, x, y, z]         quaternion container
 VectorInt16 aa;         // [x, y, z]            accel sensor measurements
 VectorInt16 aaReal;     // [x, y, z]            gravity-free accel sensor measurements
-VectorInt16 aaWorld;    // [x, y, z]            world-frame accel sensor measurements
+VectorFloat aaWorld;    // [x, y, z]            world-frame accel sensor measurements
 VectorFloat gravity;    // [x, y, z]            gravity vector
 float euler[3];         // [psi, theta, phi]    Euler angle container 
 float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
-VectorInt16 vvReal;     // [x, y, z]            linear velocities
-VectorInt16 ssReal;     // [x, y, z]            linear displacements
+VectorFloat vvReal;     // [x, y, z]            linear velocities
+VectorFloat ssReal;     // [x, y, z]            linear displacements
+
+// time interval for integration
+unsigned long cur_time, prev_time;
+
+float grav_scale = GRAVITY / 16384.0; //Mutiply by accelerometer readings to get SI unit versions
 
 #define SMOOTH_F 0.01   // smoothing factor for compass
 float compass_offset;   // offset to correct compass
@@ -146,6 +153,7 @@ void setup() {
     compass.SetScale(1.3); // Set the scale of the compass.
     compass.SetMeasurementMode(Measurement_Continuous); // Set the measurement mode to Continuous
     compass_offset = 0.0;
+    prev_time = micros();
 }
 
 // ================================================================
@@ -227,17 +235,64 @@ void loop() {
           compass_offset = compass_offset * (1.0 - SMOOTH_F) + compass_diff * SMOOTH_F; 
         }
         Serial.print("ypr\t");
-        Serial.print(ypr[0] * 180/M_PI);
+        Serial.print(ypr[0] * 180/M_PI); // yaw in degrees without correction
         Serial.print("\t");
-        Serial.print(ypr[1] * 180/M_PI);
+        Serial.print(ypr[1] * 180/M_PI); // pitch in degrees
         Serial.print("\t");
-        Serial.print(ypr[2] * 180/M_PI);
+        Serial.print(ypr[2] * 180/M_PI); // roll in degrees
         Serial.print("\t");
-        Serial.println((ypr[0] + compass_offset) * 180/M_PI);
+        Serial.println((ypr[0] + compass_offset) * 180/M_PI); // yaw in degrees with correction
 
         // read linear acceleration and integrate for velocity and position
         mpu.dmpGetAccel(&aa, fifoBuffer);
         mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity); // just subtracts the components of gravity
+        float sy = -sin(ypr[0]  + compass_offset); float cy = cos(ypr[0] + compass_offset); // sin and cos of true yaw
+        //          ^If stuff's not working, change -sy back to sy
+        //put acceleration in SI units
+        aaReal.x *= grav_scale; aaReal.y *= grav_scale; aaReal.z *= grav_scale; 
+        //Store old acceleration and velocity values
+        float ax_old = aaWorld.x; float ay_old = aaWorld.y; float az_old = aaWorld.z;
+        float vx_old = vvReal.x; float vy_old = vvReal.y; float vz_old = vvReal.z;
+        //Apply an inverse rotation matrix to turn the accelerometer readings into the actual observed accelerations:
+        aaWorld.x = (aaReal.x * cp * cy) + (aaReal.y * cp * sy) - (aaReal.z * sp);
+        aaWorld.y = (aaReal.x * ((sr * sp * cy) - (sy * cr))) + (aaReal.y * ((sr * sp * sy) + (cr * cy))) + (aaReal.z * sr * cp);
+        aaWorld.z = (aaReal.x * ((cr * sp * cy) + (sy * sr))) + (aaReal.y * ((cr * sp * sy) - (sr * cy))) + (aaReal.z * cr * cp);
+
+        cur_time = micros();
+        if(cur_time < 10000000) {
+          vvReal.x = vvReal.y = vvReal.z = 0.0;
+          ssReal.x = ssReal.y = ssReal.y = 0.0;
+        }
+        float half_delta_t = (cur_time - prev_time) / 2000000.0; //since we use (delta_t / 2) multiple times in integration.
+        vvReal.x += (aaWorld.x + ax_old) * half_delta_t;
+        vvReal.y += (aaWorld.y + ay_old) * half_delta_t;
+        vvReal.z += (aaWorld.x + az_old) * half_delta_t;
+        ssReal.x += (vvReal.x + vx_old) * half_delta_t;
+        ssReal.y += (vvReal.y + vy_old) * half_delta_t;
+        ssReal.z += (vvReal.z + vz_old) * half_delta_t;
+        prev_time = cur_time;
+
+        Serial.print("accel\t");
+        Serial.print(aaWorld.x); Serial.print("\t");
+        Serial.print(aaWorld.y); Serial.print("\t");
+        Serial.println(aaWorld.z); 
+
+        Serial.print("vel\t");
+        Serial.print(vvReal.x); Serial.print("\t");
+        Serial.print(vvReal.y); Serial.print("\t");
+        Serial.println(vvReal.z); 
+
+        Serial.print("xyz\t");
+        Serial.print(ssReal.x); Serial.print("\t");
+        Serial.print(ssReal.y); Serial.print("\t");
+        Serial.println(ssReal.z); 
+
+        
+
+        
+        
+        
+        
 
         // blink LED to indicate activity
         blinkState = !blinkState;
